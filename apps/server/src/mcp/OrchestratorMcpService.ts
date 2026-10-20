@@ -14,6 +14,7 @@ import {
   type OrchestrationV2TurnItem,
   OrchestratorMcpFailure,
   type OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpCoordinateFeatureInput,
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
   type OrchestratorMcpCreatedThread,
@@ -106,6 +107,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { featureCoordinatorPrompt } from "./featureCoordinatorPrompt.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -133,6 +135,10 @@ type TerminalTaskStatus = Extract<
 >;
 
 export interface OrchestratorMcpServiceShape {
+  readonly coordinateFeature: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpCoordinateFeatureInput,
+  ) => Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure>;
   readonly capabilities: (
     scope: McpInvocationScope,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
@@ -1718,7 +1724,35 @@ const make = Effect.gen(function* () {
     return task;
   });
 
-  return OrchestratorMcpService.of({
+  const service: OrchestratorMcpServiceShape = OrchestratorMcpService.of({
+    coordinateFeature: Effect.fn("OrchestratorMcpService.coordinateFeature")(
+      function* (scope, input) {
+        const caller = yield* loadThreadCaller(scope, "coordinate_feature");
+        const parent = caller.parent;
+        const providers = yield* loadProviders;
+        const accepted = yield* threadManagement.hasReceipt(
+          stableCommandId({
+            scope: caller.scope,
+            requestKey: `feature:${input.clientRequestId}`,
+            operation: "delegate-task",
+          }),
+        );
+        if (!accepted) {
+          for (const target of Object.values(input.agents)) {
+            yield* resolveTargetRechecking({ parent, target, providers });
+          }
+        }
+        return yield* service.delegateTask(scope, {
+          task: featureCoordinatorPrompt(input),
+          title: `Feature: ${input.feature.slice(0, 100)}`,
+          ...(input.coordinator === undefined ? {} : { target: input.coordinator }),
+          isolation: "worktree",
+          baseRef: input.baseRef ?? "main",
+          mode: "async",
+          clientRequestId: `feature:${input.clientRequestId}`,
+        });
+      },
+    ),
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
@@ -2047,6 +2081,9 @@ const make = Effect.gen(function* () {
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+      if (input.baseRef !== undefined && input.isolation !== "worktree") {
+        return yield* failure("invalid_request", "baseRef requires isolation=worktree.");
+      }
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -2088,18 +2125,26 @@ const make = Effect.gen(function* () {
         const project = yield* requireProject(parent.thread.projectId);
         const base = yield* gitDriver
           .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
+            cwd:
+              input.baseRef === undefined
+                ? (parent.thread.worktreePath ?? project.workspaceRoot)
+                : project.workspaceRoot,
+            revision: input.baseRef ?? "HEAD",
           })
           .pipe(
             Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
+              failure(
+                "invalid_request",
+                input.baseRef === undefined
+                  ? "Unable to resolve the parent checkout commit."
+                  : "Unable to resolve the requested base ref in the project root.",
+              ),
             ),
           );
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
+        if (input.baseRef === undefined && parent.thread.worktreePath !== null) {
           yield* gitDriver
             .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
             .pipe(
@@ -2809,6 +2854,7 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadInterruptResult;
     }),
   });
+  return service;
 });
 
 export const layer: Layer.Layer<

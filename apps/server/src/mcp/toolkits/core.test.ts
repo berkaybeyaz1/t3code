@@ -708,6 +708,25 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
         Effect.provideService(McpSchema.McpServerClient, client),
       );
     expect(declaredFailure(result)).toMatchObject({ code: "thread_credential_required" });
+    const target = { providerInstanceId: "codex", model: "coding-model" };
+    const feature = yield* server
+      .callTool({
+        name: "coordinate_feature",
+        arguments: {
+          feature: "Add search",
+          acceptanceCriteria: ["Search works"],
+          agents: { design: target, frontend: target, backend: target, review: target },
+          clientRequestId: "feature-client-denied",
+        },
+      })
+      .pipe(
+        Effect.provideService(
+          McpInvocationContext.McpInvocationContext,
+          clientScope("full-access"),
+        ),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(declaredFailure(feature)).toMatchObject({ code: "thread_credential_required" });
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(

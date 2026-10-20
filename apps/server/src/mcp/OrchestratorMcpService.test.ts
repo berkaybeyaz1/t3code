@@ -21,6 +21,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
@@ -889,6 +890,141 @@ describe("OrchestratorMcpService provider resolution", () => {
     runtimeRequests: [],
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
+
+  it.effect.each([
+    { name: "default main", baseRef: undefined, expectedRef: "main", fails: false },
+    { name: "custom base", baseRef: "release", expectedRef: "release", fails: false },
+    { name: "missing base", baseRef: "missing", expectedRef: "missing", fails: true },
+  ])("coordinates a feature from $name and preserves the pinned base on retry", (testCase) =>
+    Effect.gen(function* () {
+      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Coordinate the feature.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      let accepted = false;
+      const commands: Array<Record<string, unknown>> = [];
+      const resolutions: Array<{ cwd: string; revision: string }> = [];
+      const providers = [
+        providerSnapshot({
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          model: "gpt-5.4",
+        }),
+        providerSnapshot({
+          instanceId: claudeInstanceId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          model: "claude-sonnet-4-6",
+        }),
+      ];
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        ServerSettings.layerTest(),
+        providerRegistryLayer(providers),
+        adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.sync(() => accepted),
+          assertProviderInstanceEnabled: () => Effect.void,
+          getThreadRecords: (id) =>
+            Effect.succeed(
+              id === parentThreadId ? parentProjection(accepted ? [task] : []) : childProjection,
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              accepted = true;
+              return {
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never;
+            }),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          getById: () =>
+            Effect.succeed(
+              Option.some({ id: projectId, title: "Project", workspaceRoot: "/project" } as never),
+            ),
+        }),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          resolveCommit: (input) => {
+            resolutions.push(input);
+            return testCase.fails
+              ? Effect.fail(new Error("missing ref") as never)
+              : Effect.succeed({ commitSha: "a".repeat(40) });
+          },
+        }),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const coder = { providerInstanceId: codexInstanceId, model: "gpt-5.4" };
+        const invalid = yield* service
+          .delegateTask(scope, {
+            task: "Shared task",
+            baseRef: "main",
+          })
+          .pipe(Effect.flip);
+        assert.equal(invalid.code, "invalid_request");
+        assert.equal(commands.length, 0);
+        assert.equal(resolutions.length, 0);
+        const reviewer = { providerInstanceId: claudeInstanceId, model: "claude-sonnet-4-6" };
+        const input = {
+          feature: "Add project search",
+          acceptanceCriteria: ["Search returns matching projects"],
+          agents: { design: reviewer, frontend: coder, backend: coder, review: reviewer },
+          ...(testCase.baseRef === undefined ? {} : { baseRef: testCase.baseRef }),
+          clientRequestId: `coordinate-${testCase.name}`,
+        };
+        if (testCase.fails) {
+          const error = yield* service.coordinateFeature(scope, input).pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request");
+          assert.equal(commands.length, 0);
+          return;
+        }
+        const first = yield* service.coordinateFeature(scope, input);
+        providers[1] = { ...providers[1]!, enabled: false };
+        const retry = yield* service.coordinateFeature(scope, input);
+        assert.equal(first.taskId, retry.taskId);
+        assert.equal(first.status, "running");
+        assert.deepEqual(resolutions, [{ cwd: "/project", revision: testCase.expectedRef }]);
+        assert.deepEqual(commands[0]?.workspaceStrategy, {
+          type: "worktree",
+          baseRef: "a".repeat(40),
+          startFromOrigin: false,
+        });
+        assert.equal(commands[1]?.workspaceStrategy, undefined);
+        assert.equal(commands[0]?.commandId, commands[1]?.commandId);
+        assert.deepEqual(commands[0]?.modelSelection, {
+          instanceId: codexInstanceId,
+          model: "gpt-5.4",
+        });
+      }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+    }),
+  );
 
   it.effect(
     "advertises orchestration capability from registered adapters rather than a driver allowlist",

@@ -1,5 +1,6 @@
 import {
   OrchestratorMcpCapabilitiesResult,
+  OrchestratorMcpCoordinateFeatureInput,
   OrchestrationV2StopWorkflowInput,
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpCreateThreadsResult,
@@ -62,6 +63,19 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
+
+const CoordinateFeatureTool = Tool.make("coordinate_feature", {
+  description:
+    "Start an agent-driven feature coordinator in an isolated worktree pinned to local main (or baseRef). Needs an active T3 parent run. Select coordinator and design, frontend, backend, and review targets from orchestrator_capabilities. The coordinator plans dependent tasks, delegates across Codex/Claude or other configured providers, integrates commits, and follows bounded test/review/repair instructions. maxRounds (default 3, at most 10) and maxParallelTasks (default 2, at most 4) are agent instructions, not runtime-enforced limits. Does not fetch main or automatically merge/push to the base branch. Returns a delegated task: use task_status and task_cancel for progress and cancellation. Reuse clientRequestId when retrying this launch.",
+  parameters: OrchestratorMcpCoordinateFeatureInput,
+  success: OrchestratorMcpDelegateTaskResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Coordinate a feature")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
 
 export const DelegateTaskTool = Tool.make("delegate_task", {
   description:
@@ -273,6 +287,7 @@ const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
 
 export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
+  CoordinateFeatureTool,
   DelegateTaskTool,
   TaskStatusTool,
   TaskCancelTool,

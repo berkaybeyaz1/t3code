@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   OrchestratorMcpCreateThreadsInput,
+  OrchestratorMcpCoordinateFeatureInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadInterruptInput,
@@ -22,6 +23,28 @@ const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSend
 const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
 
 describe("orchestrator MCP contracts", () => {
+  it("requires acceptance criteria, explicit specialist targets, and bounded feature settings", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpCoordinateFeatureInput);
+    const coder = { providerInstanceId: "codex", model: "coding-model" };
+    const reviewer = { providerInstanceId: "claudeAgent", model: "review-model" };
+    const input = {
+      feature: "Add project search",
+      acceptanceCriteria: ["Search finds projects by name"],
+      agents: { design: reviewer, frontend: coder, backend: coder, review: reviewer },
+      clientRequestId: "feature-search-1",
+    };
+    expect(decode(input).agents.backend.providerInstanceId).toBe("codex");
+    expect(() => decode({ ...input, acceptanceCriteria: [] })).toThrow();
+    expect(() => decode({ ...input, clientRequestId: undefined })).toThrow();
+    expect(() => decode({ ...input, agents: { ...input.agents, review: {} } })).toThrow();
+    for (const maxRounds of [0, -1, 1.5, 11]) {
+      expect(() => decode({ ...input, maxRounds })).toThrow();
+    }
+    for (const maxParallelTasks of [0, 1.5, 5]) {
+      expect(() => decode({ ...input, maxParallelTasks })).toThrow();
+    }
+    expect(decode({ ...input, maxRounds: 10, maxParallelTasks: 4 }).maxRounds).toBe(10);
+  });
   it("accepts explicit worktree isolation and keeps shared delegation as the default", () => {
     expect(decodeDelegateTaskInput({ task: "Review changes" }).isolation).toBeUndefined();
     expect(

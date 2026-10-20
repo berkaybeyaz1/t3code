@@ -171,7 +171,13 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "Defaults to shared: use the parent's checkout. Worktree creates a separate checkout from the parent's current local commit before starting the child. Uncommitted edits are not copied.",
+        "Defaults to shared: use the parent's checkout. Worktree creates a separate checkout from the parent's current local commit, or baseRef when specified, before starting the child. Uncommitted edits are not copied.",
+    }),
+  ),
+  baseRef: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)).annotate({
+      description:
+        "With isolation=worktree, resolve this local Git ref in the project root and pin its commit before launching. Defaults to the parent checkout HEAD. Does not fetch remotes.",
     }),
   ),
   mode: Schema.optional(
@@ -194,6 +200,37 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
+
+const FeatureAgentTarget = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  model: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  options: Schema.optional(OrchestratorMcpTargetOptions),
+});
+
+export const OrchestratorMcpCoordinateFeatureInput = Schema.Struct({
+  feature: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  acceptanceCriteria: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(2_000))).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(20),
+  ),
+  coordinator: Schema.optional(FeatureAgentTarget),
+  agents: Schema.Struct({
+    design: FeatureAgentTarget,
+    frontend: FeatureAgentTarget,
+    backend: FeatureAgentTarget,
+    review: FeatureAgentTarget,
+  }),
+  baseRef: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)).annotate({
+      description: "Local base ref to pin at launch. Defaults to main. Fetch it first if needed.",
+    }),
+  ),
+  maxRounds: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(10))),
+  maxParallelTasks: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(4))),
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpCoordinateFeatureInput =
+  typeof OrchestratorMcpCoordinateFeatureInput.Type;
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   taskId: NodeId,

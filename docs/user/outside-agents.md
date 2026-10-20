@@ -6,6 +6,29 @@ check which providers and models are available. This covers Claude Code or
 Codex in your own terminal, ChatGPT, and bots that support MCP. Each agent signs
 in once, and you choose what it may do.
 
+## Coordinate a feature with multiple agents
+
+From an active T3 Code agent thread, ask the agent to use `coordinate_feature`
+with your feature brief and acceptance criteria. Choose provider instances and
+models from `orchestrator_capabilities` for design, frontend, backend, and review;
+you can assign Claude and Codex different roles. The coordinator can use the
+current thread's model or an explicitly selected model.
+
+The coordinator starts in a separate worktree from local `main`, or your chosen
+`baseRef`, pinned to its commit at launch. Fetch your base branch first if you
+want the latest remote version. It plans dependent tasks, delegates specialist
+work, integrates feature commits, and requests tests and independent review.
+The result is a feature branch for you to review, without automatically merging
+or pushing to the base branch.
+
+The first version is agent-driven: the task ledger, acceptance checks, repair
+rounds, and parallelism are instructions followed by the coordinator, rather than
+a deterministic workflow engine. Defaults are three rounds per task and two
+parallel specialist tasks. Use the returned `taskId` with `task_status` to inspect
+progress or `task_cancel` to stop the coordinator and its children. Keep the same
+`clientRequestId` when retrying a launch. Outside agents must first hand the work
+to an active T3 Code thread; this tool requires a thread credential.
+
 ## Get the MCP URL
 
 In **Settings → Connections**, open a saved environment's menu and choose
